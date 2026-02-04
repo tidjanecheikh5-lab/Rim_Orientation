@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import random
+import os
 
 # ================= CONFIGURATION =================
 st.set_page_config(
@@ -9,17 +10,28 @@ st.set_page_config(
     layout="centered"
 )
 
+# ================= PATHS =================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+QUESTIONS_PATH = os.path.join(BASE_DIR, "orientation_questions.csv")
+FILIERES_PATH = os.path.join(BASE_DIR, "filieres.csv")
+
+# ================= LOAD DATA =================
+try:
+    questions = pd.read_csv(QUESTIONS_PATH)
+    filieres = pd.read_csv(FILIERES_PATH)
+except Exception as e:
+    st.error("❌ Impossible de charger les fichiers CSV")
+    st.stop()
+
 # ================= SESSION =================
 if "step" not in st.session_state:
     st.session_state.step = 1
-    st.session_state.scores = {"R": 0, "I": 0, "A": 0, "S": 0, "E": 0, "C": 0}
-
-# ================= CHARGEMENT QUESTIONS =================
-questions = pd.read_csv("data/orientation_questions.csv")
-
-if questions.empty:
-    st.error("La table orientation_questions est vide.")
-    st.stop()
+    st.session_state.scores = {
+        "R": 0, "I": 0, "A": 0,
+        "S": 0, "E": 0, "C": 0
+    }
+    st.session_state.seed = random.randint(0, 999999)
 
 # ================= TITRE =================
 st.title("🇲🇷 RIM-Orientation")
@@ -39,74 +51,76 @@ if st.session_state.step <= len(questions):
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        if st.button("❌ Pas du tout", key=f"no_{st.session_state.step}", use_container_width=True):
+        if st.button("❌ Pas du tout", use_container_width=True):
             st.session_state.step += 1
-            st.experimental_rerun()
+            st.rerun()
 
     with col2:
-        if st.button("🟡 Un peu", key=f"maybe_{st.session_state.step}", use_container_width=True):
+        if st.button("🟡 Un peu", use_container_width=True):
             st.session_state.scores[q["dimension"]] += 1
             st.session_state.step += 1
-            st.experimental_rerun()
+            st.rerun()
 
     with col3:
-        if st.button("✅ Beaucoup", key=f"yes_{st.session_state.step}", use_container_width=True):
+        if st.button("✅ Beaucoup", use_container_width=True):
             st.session_state.scores[q["dimension"]] += 2
             st.session_state.step += 1
-            st.experimental_rerun()
+            st.rerun()
 
 # ================= RÉSULTATS =================
 else:
     st.balloons()
     st.success("Analyse terminée !")
 
-    scores_items = list(st.session_state.scores.items())
-    random.shuffle(scores_items)
-    sorted_scores = sorted(scores_items, key=lambda x: x[1], reverse=True)
+    # --- Tri RIASEC avec mélange contrôlé ---
+    random.seed(st.session_state.seed)
+    items = list(st.session_state.scores.items())
+    random.shuffle(items)
+    items.sort(key=lambda x: x[1], reverse=True)
 
-    top_letters = [item[0] for item in sorted_scores[:3]]
-    lettre1, lettre2, lettre3 = top_letters
+    lettre1, lettre2, lettre3 = [x[0] for x in items[:3]]
 
-    st.subheader(f"Votre profil RIASEC dominant est : **{lettre1}{lettre2}{lettre3}**")
+    st.subheader(
+        f"Votre profil RIASEC dominant est : **{lettre1}{lettre2}{lettre3}**"
+    )
+
     st.write("Détail de vos scores :")
     st.json(st.session_state.scores)
 
-    # ================= FILIERES =================
-    rank_map = {"R": 1, "I": 2, "A": 3, "S": 4, "E": 5, "C": 6}
+    # ================= DISTANCE HOLLAND =================
+    rank = {"R": 1, "I": 2, "A": 3, "S": 4, "E": 5, "C": 6}
 
-    r1 = rank_map[lettre1]
-    r2 = rank_map[lettre2]
+    r1 = rank[lettre1]
+    r2 = rank[lettre2]
 
-    filieres = pd.read_csv("data/filieres.csv")
+    def holland_distance(code):
+        code = str(code).strip().upper()
 
-    def distance(code, r1, r2):
-        # code example: "RI", "AS", "C" ...
         if len(code) == 1:
-            # add a dummy second letter (same as first)
-            code = code + code
+            code = code * 2
 
-        c1 = rank_map[code[0]]
-        c2 = rank_map[code[1]]
+        c1 = rank.get(code[0], r1)
+        c2 = rank.get(code[1], r2)
 
-        # distance circulaire (1..6)
         d1 = min(abs(c1 - r1), 6 - abs(c1 - r1))
         d2 = min(abs(c2 - r2), 6 - abs(c2 - r2))
+
         return d1 * 2 + d2
 
-    filieres["distance"] = filieres["code_riasec"].apply(lambda x: distance(str(x), r1, r2))
+    filieres["distance"] = filieres["code_riasec"].apply(holland_distance)
 
-    filieres = filieres.sort_values(["distance", "filiere_nom", "etablissement"])
-    filieres = filieres.drop_duplicates(subset=["filiere_nom", "etablissement"])
+    filieres = (
+        filieres
+        .sort_values(["distance", "filiere_nom", "etablissement"])
+        .drop_duplicates(subset=["filiere_nom", "etablissement"])
+    )
 
-    st.write("Voici les filières mauritaniennes les plus proches de votre profil :")
-    st.table(filieres.head(5)[["filiere_nom", "etablissement", "code_riasec", "distance"]])
+    st.write(
+        "Voici les filières mauritaniennes les plus proches de votre profil :"
+    )
 
-    # ================= BOUTON "GÉNÉRER D'AUTRES RÉPONSES" =================
-    if st.button("🎲 Générer d'autres réponses"):
-        st.experimental_rerun()
-
-    # ================= RESET =================
-    if st.button("🔄 Recommencer le test"):
-        st.session_state.step = 1
-        st.session_state.scores = {"R": 0, "I": 0, "A": 0, "S": 0, "E": 0, "C": 0}
-        st.experimental_rerun()
+    st.table(
+        filieres.head(5)[
+            ["filiere_nom", "etablissement", "code_riasec", "distance"]
+        ]
+    )
